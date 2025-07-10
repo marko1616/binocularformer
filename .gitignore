@@ -208,3 +208,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# datasets
+datasets/SUNRGBD
+datasets/SUNRGBDv2Test
+datasets/SUNRGBDMeta3DBB_v2.mat
+datasets/SUNRGBDMetaStructIOTest.mat

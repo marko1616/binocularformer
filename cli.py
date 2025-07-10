@@ -41,7 +41,7 @@ def run_pytest():
     env["PYTHONPATH"] = str(PROJECT_ROOT)
     console.print(Panel.fit("[cyan]Running: pytest with PYTHONPATH set automatically[/cyan]"))
     try:
-        subprocess.run(["pytest"], cwd=PROJECT_ROOT, env=env, check=True)
+        subprocess.run(["pytest", "-s", "test/"], cwd=PROJECT_ROOT, env=env, check=True)
         console.print("[green]Pytest completed successfully.[/green]")
     except subprocess.CalledProcessError:
         console.print("[red]Pytest failed.[/red]")

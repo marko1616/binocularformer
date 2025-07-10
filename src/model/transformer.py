@@ -1,30 +1,23 @@
 import torch
 from torch import nn
 from torch import Tensor
-from enum import Enum
 from typing import Optional
 
-from .utils import ActivationType
-
-class EmbedType(Enum):
-    START = 0
-    PATCH = 1
-    END = 2
-    CLS = 3
+from .utils import ActivationType, init_add_activation, point_rope
 
 class TransformerEncoderLayer(nn.Module):
+    @init_add_activation
     def __init__(
         self,
         d_model: int,
         nhead: int,
         dim_feedforward: int,
         dropout: float,
-        activation: ActivationType = ActivationType.GELU
     ) -> None:
         super().__init__()
 
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        # input shape: (batch_size, seq_len, d_model)
+        # input shape: (batch_size, n_points, d_model)
 
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -36,32 +29,27 @@ class TransformerEncoderLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
-        if activation == ActivationType.RELU:
-            self.activation_fn = nn.ReLU()
-        elif activation == ActivationType.GELU:
-            self.activation_fn = nn.GELU()
-        elif activation == ActivationType.LEAKY_RELU:
-            self.activation_fn = nn.LeakyReLU()
-        else:
-            raise ValueError(f"Unsupported activation function: {activation}")
-
     def forward(
         self,
-        x: Tensor,  # shape: (batch_size, seq_len, d_model)
-        src_mask: Optional[Tensor] = None,  # shape: (seq_len, seq_len)
-        src_key_padding_mask: Optional[Tensor] = None  # shape: (batch_size, seq_len)
+        position: Tensor,  # shape: (batch_size, n_points, 3)
+        tokens: Tensor,  # shape: (batch_size, n_points + 1, d_model)
+        src_mask: Optional[Tensor] = None,  # shape: (n_points, n_points)
+        src_key_padding_mask: Optional[Tensor] = None  # shape: (batch_size, n_points)
     ) -> Tensor:
-        attn_output, _ = self.self_attn(x, x, x, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
-        # attn_output shape: (batch_size, seq_len, d_model)
-        x = x + self.dropout1(attn_output)
-        x = self.norm1(x)
+        input_tokens = tokens
 
-        ff_output = self.linear2(self.dropout(self.activation_fn(self.linear1(x))))
-        # ff_output shape: (batch_size, seq_len, d_model)
-        x = x + self.dropout2(ff_output)
-        x = self.norm2(x)
+        tokens_with_pos = torch.cat([point_rope(tokens[:, :-1, :], position), tokens[:, -1, :].unsqueeze(1)], dim=1)
+        attn_output, _ = self.self_attn(tokens_with_pos, tokens_with_pos, tokens_with_pos, 
+                                    attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
 
-        return x  # shape: (batch_size, seq_len, d_model)
+        tokens = input_tokens + self.dropout1(attn_output)
+        tokens = self.norm1(tokens)
+        ff_output = self.linear2(self.dropout(self.activation_fn(self.linear1(tokens))))
+
+        tokens = tokens + self.dropout2(ff_output)
+        tokens = self.norm2(tokens)
+        
+        return tokens  # shape: (batch_size, n_points, d_model)
     
 class TransformerEncoder(nn.Module):
     def __init__(
@@ -75,19 +63,20 @@ class TransformerEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
-            TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation)
+            TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation=activation)
             for _ in range(num_layers)
         ])
 
     def forward(
         self,
-        x: Tensor,  # shape: (batch_size, seq_len, d_model)
-        src_mask: Optional[Tensor] = None,  # shape: (seq_len, seq_len)
-        src_key_padding_mask: Optional[Tensor] = None  # shape: (batch_size, seq_len)
+        position: Tensor,  # shape: (batch_size, n_points, 3)
+        points: Tensor,  # shape: (batch_size, n_points, d_model)
+        src_mask: Optional[Tensor] = None,  # shape: (n_points, n_points)
+        src_key_padding_mask: Optional[Tensor] = None  # shape: (batch_size, n_points)
     ) -> Tensor:
         for layer in self.layers:
-            x = layer(x, src_mask, src_key_padding_mask)
-        return x  # shape: (batch_size, seq_len, d_model)
+            points = layer(position, points, src_mask, src_key_padding_mask)
+        return points  # shape: (batch_size, n_points, d_model)
 
 class BinocularformerEncoder(nn.Module):
     def __init__(
@@ -101,7 +90,7 @@ class BinocularformerEncoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.embedding = nn.Embedding(len(EmbedType), d_model, padding_idx=0)
+        self.embedding = nn.Embedding(1, d_model, padding_idx=0)
         # shape: (vocab_size=4, d_model)
 
         self.encoder = TransformerEncoder(
@@ -115,18 +104,16 @@ class BinocularformerEncoder(nn.Module):
 
     def forward(
         self,
-        x: Tensor,  # shape: (batch_size, seq_len, d_model)
-        src_mask: Optional[Tensor] = None,  # shape: (seq_len, seq_len)
-        src_key_padding_mask: Optional[Tensor] = None  # shape: (batch_size, seq_len)
+        position: Tensor,  # shape: (batch_size, n_points, 3)
+        points: Tensor,  # shape: (batch_size, n_points, d_model)
+        src_mask: Optional[Tensor] = None,  # shape: (n_points, n_points)
+        src_key_padding_mask: Optional[Tensor] = None  # shape: (batch_size, n_points)
     ) -> Tensor:
-        bs, seq_len, _ = x.shape
-        device = x.device
+        bs = points.shape[0]
+        device = points.device
 
-        start_token = self.embedding(torch.full((bs, 1), EmbedType.START.value, device=device))
-        end_token = self.embedding(torch.full((bs, 1), EmbedType.END.value, device=device))
-        cls_token = self.embedding(torch.full((bs, 1), EmbedType.CLS.value, device=device))
-        x = x + self.embedding(torch.full((bs, seq_len), EmbedType.PATCH.value, device=device))
-        x = torch.cat([start_token, x, end_token, cls_token], dim=1)
+        cls_token = self.embedding(torch.full((bs, 1), 0, device=device))
+        points = torch.cat([points, cls_token], dim=1)
         
-        # shape: (batch_size, seq_len + 3, d_model)
-        return self.encoder(x, src_mask, src_key_padding_mask)
+        # shape: (batch_size, n_points + 3, d_model)
+        return self.encoder(position, points, src_mask, src_key_padding_mask)
