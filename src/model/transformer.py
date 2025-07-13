@@ -39,7 +39,7 @@ class TransformerEncoderLayer(nn.Module):
         input_tokens = tokens
 
         tokens_with_pos = torch.cat([point_rope(tokens[:, :-1, :], position), tokens[:, -1, :].unsqueeze(1)], dim=1)
-        attn_output, _ = self.self_attn(tokens_with_pos, tokens_with_pos, tokens_with_pos, 
+        attn_output, _ = self.self_attn(tokens_with_pos, tokens_with_pos, tokens_with_pos,
                                     attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
 
         tokens = input_tokens + self.dropout1(attn_output)
@@ -48,9 +48,9 @@ class TransformerEncoderLayer(nn.Module):
 
         tokens = tokens + self.dropout2(ff_output)
         tokens = self.norm2(tokens)
-        
+
         return tokens  # shape: (batch_size, n_points, d_model)
-    
+
 class TransformerEncoder(nn.Module):
     def __init__(
         self,
@@ -114,6 +114,6 @@ class BinocularformerEncoder(nn.Module):
 
         cls_token = self.embedding(torch.full((bs, 1), 0, device=device))
         points = torch.cat([points, cls_token], dim=1)
-        
+
         # shape: (batch_size, n_points + 3, d_model)
         return self.encoder(position, points, src_mask, src_key_padding_mask)

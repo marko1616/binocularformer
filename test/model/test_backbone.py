@@ -28,7 +28,7 @@ class TestBinocularFormer(unittest.TestCase):
                                 detection_head_num=4).to(torch.float16).to("cuda")
 
         with torch.no_grad():
-            output = model(positions, image)
+            output, _ = model(positions, image)
 
         expected_num_clusters = reduce(lambda x, y: x // y, [N]+cluster_sizes)
         self.assertEqual(len(output), expected_num_clusters*detection_head_num)

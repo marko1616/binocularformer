@@ -8,15 +8,13 @@ class DetectionHead(nn.Module):
         super().__init__()
 
         self.objectness_branch = nn.Linear(in_features, 1)
+        self.class_branch = nn.Linear(in_features, class_num)
 
-        self.class_branch = nn.Sequential(
-            nn.Linear(in_features, class_num),
-            nn.Softmax(dim=-1)
-        )
+        self.softplus = nn.Softplus()
 
         self.xz_branch = nn.Linear(in_features, 5)
         self.y_branch = nn.Linear(in_features, 2)
-    
+
     def forward(self, center: Tensor, feature: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         device = center.device
         dtype = center.dtype
@@ -25,9 +23,11 @@ class DetectionHead(nn.Module):
             feature = feature.view(batch_size, -1)
 
         objectness_logits = self.objectness_branch(feature)
-        class_pred = self.class_branch(feature)
+        class_logits = self.class_branch(feature)
 
         w, h, theta, offset = self.xz_branch(feature).split([1, 1, 1, 2], dim=-1)
+        w = self.softplus(w)
+        h = self.softplus(h)
         corners = torch.tensor([[-1, -1], [1, -1], [1, 1], [-1, 1]], dtype=dtype, device=device)  # (4, 2)
         corners = corners * torch.cat([w, h], dim=-1).unsqueeze(1) / 2  # (B, 4, 2)
         cos_t = torch.cos(theta).squeeze(1)
@@ -41,9 +41,10 @@ class DetectionHead(nn.Module):
         xz_pred = center[..., [0, 2]].unsqueeze(1) + xz_pred
 
         y_min, height = self.y_branch(feature).split([1, 1], dim=-1)
+        height = self.softplus(height)
         y_pred = torch.stack([
             center[..., 1] + y_min.squeeze(1),
             center[..., 1] + y_min.squeeze(1) + height.squeeze(1)
         ], dim=-1)
 
-        return objectness_logits, class_pred, xz_pred, y_pred
+        return objectness_logits, class_logits, xz_pred, y_pred

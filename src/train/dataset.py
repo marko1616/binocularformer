@@ -2,6 +2,8 @@ import json
 import torch
 import numpy as np
 
+import torchvision.transforms.functional as TF
+
 from typing import Any, Optional
 from pathlib import Path
 from dataclasses import dataclass
@@ -9,10 +11,11 @@ from collections import Counter
 
 from torch import Tensor
 from torch.utils.data import Dataset
-import torchvision.transforms.functional as TF
 
 from PIL import Image
 from PIL import ImageOps
+
+from .utils import is_rectangle
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SUNRGBD_PATH = PROJECT_ROOT / "datasets" / "SUNRGBD"
@@ -33,10 +36,10 @@ def fitted_intrinsics(
     centering: tuple[float, float] = (0.5, 0.5)
 ) -> Intrinsics:
     scale = max(size_tgt[0] / size_src[0], size_tgt[1] / size_src[1])
-    
+
     tx = size_tgt[0] / 2 - scale * size_src[0] * centering[0]
     ty = size_tgt[1] / 2 - scale * size_src[1] * centering[1]
-    
+
     return Intrinsics(
         fx=scale * intr.fx,
         fy=scale * intr.fy,
@@ -45,7 +48,7 @@ def fitted_intrinsics(
     )
 
 class SunRgbdDataset(Dataset):
-    def __init__(self, norm_param: Optional[tuple[float, float]] = None) -> None:
+    def __init__(self, norm_param: Optional[tuple[float, float]] = None, verbose: bool = True) -> None:
         super().__init__()
 
         all_candidate_items = []
@@ -73,26 +76,44 @@ class SunRgbdDataset(Dataset):
                 continue
 
             class_names = []
+            invalid_skip = False
             if "objects" in data:
                 for obj in data["objects"]:
-                    if obj is not None and not isinstance(obj, list) and obj["polygon"] and "name" in obj:
-                        name = obj.get("name")
-                        class_names.append(name)
-                        class_counter[name] += 1
+                    if obj is None:
+                        invalid_skip = True
+                        continue
+                    if isinstance(obj, list):
+                        invalid_skip = True
+                        continue
+                    if not obj["polygon"]:
+                        invalid_skip = True
+                        continue
+                    if "name" not in obj:
+                        invalid_skip = True
+                        continue
+                    xz_coords = list(zip(obj["polygon"][0]["X"], obj["polygon"][0]["Z"]))
+                    xz_tensor = torch.tensor(xz_coords)  # shape: (4, 2)
+                    if not is_rectangle(xz_tensor):
+                        invalid_skip = True
+                        continue
+                    name = obj.get("name")
+                    class_names.append(name)
+                    class_counter[name] += 1
 
-            if class_names:
+            if class_names and not invalid_skip:
                 item_class_map[item_path] = class_names
 
         valid_classes = {class_name for class_name, cnt in class_counter.items() if cnt >= 500 and class_name not in SUNRGBD_CLASS_IGNORE}
-        print("Number of classes:", len(class_counter))
-        print("Filtered valid (N>=500) classes frequency:")
-        for class_name in valid_classes:
-            print(f"  {class_name}: {class_counter[class_name]}")
         self.class_name = tuple(sorted(valid_classes))
-        self.items = [item_path for item_path, classes in item_class_map.items() 
+        self.items = [item_path for item_path, classes in item_class_map.items()
                       if any(class_name in valid_classes for class_name in classes)]
         self.length = len(self.items)
-        print(f"Filtered valid items: {self.length}")
+        if verbose:
+            print("Number of classes:", len(class_counter))
+            print("Filtered valid (N>=500) classes frequency:")
+            for class_name in valid_classes:
+                print(f"  {class_name}: {class_counter[class_name]}")
+            print(f"Filtered valid items: {self.length}")
 
         if norm_param:
             self.mean = norm_param[0]
@@ -121,8 +142,9 @@ class SunRgbdDataset(Dataset):
         self.mean /= n_pixels
         self.std = (self.std / n_pixels - self.mean ** 2).sqrt()
 
-        print(f"Dataset Image mean: {self.mean}")
-        print(f"Dataset Image std:  {self.std}")
+        if verbose:
+            print(f"Dataset Image mean: {self.mean}")
+            print(f"Dataset Image std:  {self.std}")
 
     def __len__(self) -> int:
         return self.length
@@ -172,10 +194,10 @@ class SunRgbdDataset(Dataset):
         image = (TF.to_tensor(image) - self.mean.reshape(3, 1, 1)) / self.std.reshape(3, 1, 1)
         with open(annotation_path, 'r') as f:
             data = json.load(f)
-            
+
         objects = []
         for obj in data["objects"]:
-            if obj == None or isinstance(obj, list) or not obj["polygon"] or obj["name"] not in self.class_name:
+            if obj["name"] not in self.class_name:
                 continue
             class_idx = self.class_name.index(obj["name"])
 

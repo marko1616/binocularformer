@@ -2,7 +2,6 @@ import torch
 
 from torch import nn
 from torch import Tensor
-from torch.utils.checkpoint import checkpoint
 
 from .image_feature_extractor import ImageFeatureExtractor
 from .head import DetectionHead
@@ -12,7 +11,7 @@ from .utils import ActivationType, init_add_activation, furthest_point_sampling_
 class BinocularFormer(nn.Module):
     @init_add_activation
     def __init__(self,
-                 model_dim: int = 512, 
+                 model_dim: int = 512,
                  cnn_layer_num: int = 4,
                  cnn_kernel_size: int = 3,
                  cnn_padding: int = 1,
@@ -83,11 +82,11 @@ class BinocularFormer(nn.Module):
                     indices = cluster_indices[b, c]
                     cluster_pos = pos[b, indices]
                     new_pos_list.append(cluster_pos.mean(dim=0))
-            
+
             pos = torch.stack(new_pos_list).reshape(B, num_clusters, -1)
 
         result = []
         for i in range(num_clusters):
             result += [self.detection_heads[j](pos[:,i], feat[:,i]) for j in range(self.detection_head_num)]
 
-        return tuple(result)
+        return tuple(result), pos
